@@ -106,7 +106,7 @@ export default function StackFolio() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 45000);
+    const id = setInterval(load, 10000);
     return () => clearInterval(id);
   }, [load]);
 
