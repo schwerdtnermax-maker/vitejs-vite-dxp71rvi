@@ -71,7 +71,7 @@ export default function StackFolio() {
   const [eurRate, setEurRate] = useState(0.865);
   const [fng, setFng] = useState(null);
   const [live, setLive] = useState(false);
-  const [tick, setTick] = useState(new Date());
+  const [now, setNow] = useState(new Date());
   const [lastSuccess, setLastSuccess] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [positions, setPositions] = useState(loadStoredPositions);
@@ -131,7 +131,6 @@ export default function StackFolio() {
     }
     if (f.status === 'fulfilled' && f.value?.data?.[0]) setFng(f.value.data[0]);
     setLive(ok);
-    setTick(new Date());
     if (ok) setLastSuccess(new Date());
     setRefreshing(false);
   }, []);
@@ -155,6 +154,11 @@ export default function StackFolio() {
         return c;
       });
     });
+  }, []);
+
+  useEffect(() => {
+    const clockId = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(clockId);
   }, []);
 
   useEffect(() => {
@@ -219,7 +223,7 @@ export default function StackFolio() {
                 ? `Stand ${lastSuccess.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
                 : 'Verbinde…'}
               {' · '}
-              {tick.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </div>
             <button
               onClick={load}
