@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
-import { Plus, X, TrendingUp, TrendingDown } from 'lucide-react';
+import { Plus, X, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 
 // ---- Konfiguration ----------------------------------------------------
 
@@ -68,6 +68,8 @@ export default function StackFolio() {
   const [fng, setFng] = useState(null);
   const [live, setLive] = useState(false);
   const [tick, setTick] = useState(new Date());
+  const [lastSuccess, setLastSuccess] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [positions, setPositions] = useState(loadStoredPositions);
   const [openForm, setOpenForm] = useState(null); // coinId of open "add purchase" form
 
@@ -81,6 +83,7 @@ export default function StackFolio() {
   }, [positions]);
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     const results = await Promise.allSettled([
       fetch(
         `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${WATCHLIST_IDS.join(
@@ -102,6 +105,8 @@ export default function StackFolio() {
     if (f.status === 'fulfilled' && f.value?.data?.[0]) setFng(f.value.data[0]);
     setLive(ok);
     setTick(new Date());
+    if (ok) setLastSuccess(new Date());
+    setRefreshing(false);
   }, []);
 
   useEffect(() => {
@@ -152,11 +157,32 @@ export default function StackFolio() {
             <div style={s.brand}>Portfolio</div>
             <div style={s.brandSub}>Self-Custody Tracker</div>
           </div>
-          <div style={s.liveTag}>
-            <span style={{ ...s.dot, background: live ? '#22C55E' : '#94A3B8' }} />
-            {live ? 'Live' : 'Verbinde…'} · {tick.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={s.liveTag}>
+              <span style={{ ...s.dot, background: live ? '#22C55E' : lastSuccess ? '#F59E0B' : '#94A3B8' }} />
+              {live
+                ? 'Aktualisiert'
+                : lastSuccess
+                ? `Stand ${lastSuccess.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                : 'Verbinde…'}
+              {' · '}
+              {tick.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </div>
+            <button
+              onClick={load}
+              disabled={refreshing}
+              style={s.refreshBtn}
+              aria-label="Jetzt aktualisieren"
+              title="Jetzt aktualisieren"
+            >
+              <RefreshCw size={13} style={{ animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }} />
+            </button>
           </div>
         </header>
+
+        <style>{`
+          @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        `}</style>
 
         {/* Hero total */}
         <section style={s.hero}>
@@ -358,6 +384,7 @@ const s = {
   brand: { fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: '#F1F5F9' },
   brandSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
   liveTag: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748B', fontFamily: "'JetBrains Mono', monospace" },
+  refreshBtn: { width: 24, height: 24, borderRadius: 7, border: '1px solid #2A3140', background: '#1A1F2B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8', cursor: 'pointer', padding: 0 },
   dot: { width: 6, height: 6, borderRadius: '50%' },
 
   hero: { background: '#12161F', border: '1px solid #1E2430', borderRadius: 16, padding: '22px 20px', marginBottom: 14 },
