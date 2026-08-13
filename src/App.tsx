@@ -367,7 +367,7 @@ function CoinCard({ id, meta, coin, eurRate, position, open, onToggleForm, onAdd
           )}
         </div>
         <div style={{ textAlign: 'right', minWidth: 92 }}>
-          <div style={s.priceUSD}>{priceUSD != null ? fmtUSD(priceUSD, priceUSD < 10 ? 4 : 0) : '—'}</div>
+          <div style={s.priceUSD}>{priceUSD != null ? fmtUSD(priceUSD, 2) : '—'}</div>
           <div style={{ ...s.change, color: positive ? '#4ADE80' : '#F87171' }}>{fmtPct(change)}</div>
         </div>
         <button style={s.addBtn} onClick={onToggleForm} aria-label="Kauf hinzufügen">
@@ -383,7 +383,7 @@ function CoinCard({ id, meta, coin, eurRate, position, open, onToggleForm, onAdd
           </div>
           <div style={s.posItem}>
             <span style={s.posLabel}>Ø Einstieg</span>
-            <span style={s.posValue}>{fmtUSD(position.avgEntry, position.avgEntry < 10 ? 4 : 0)}</span>
+            <span style={s.posValue}>{fmtUSD(position.avgEntry, 2)}</span>
           </div>
           <div style={s.posItem}>
             <span style={s.posLabel}>Wert</span>
