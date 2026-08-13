@@ -1,0 +1,411 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { LineChart, Line, ResponsiveContainer } from 'recharts';
+import { Plus, X, TrendingUp, TrendingDown } from 'lucide-react';
+
+// ---- Konfiguration ----------------------------------------------------
+
+const BUY_LADDER = [
+  { price: 55000, amount: 400 },
+  { price: 52500, amount: 400 },
+  { price: 50000, amount: 400 },
+  { price: 47500, amount: 400 },
+  { price: 45000, amount: 400 },
+];
+
+const WATCHLIST_IDS = ['bitcoin', 'solana', 'ethereum', 'binancecoin', 'sui', 'avalanche-2', 'ripple'];
+
+const COIN_META = {
+  bitcoin: { symbol: 'BTC', name: 'Bitcoin', color: '#F7931A' },
+  solana: { symbol: 'SOL', name: 'Solana', color: '#9945FF' },
+  ethereum: { symbol: 'ETH', name: 'Ethereum', color: '#627EEA' },
+  binancecoin: { symbol: 'BNB', name: 'BNB', color: '#F3BA2F' },
+  sui: { symbol: 'SUI', name: 'Sui', color: '#4DA2FF' },
+  'avalanche-2': { symbol: 'AVAX', name: 'Avalanche', color: '#E84142' },
+  ripple: { symbol: 'XRP', name: 'XRP', color: '#25A768' },
+};
+
+// Startbestand — Menge & Einstiegspreis in USD pro Coin.
+// Kann direkt in der App über "+" bei jedem Coin ergänzt werden.
+const INITIAL_POSITIONS = {
+  bitcoin: { amount: 0.02822850, avgEntry: 64787 },
+  solana: { amount: 0, avgEntry: 0 },
+  ethereum: { amount: 0, avgEntry: 0 },
+  binancecoin: { amount: 0, avgEntry: 0 },
+  sui: { amount: 0, avgEntry: 0 },
+  'avalanche-2': { amount: 0, avgEntry: 0 },
+  ripple: { amount: 0, avgEntry: 0 },
+};
+
+// ---- Helpers ------------------------------------------------------------
+
+const fmtUSD = (n, d = 2) =>
+  n == null ? '—' : `$${n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+const fmtEUR = (n, d = 2) =>
+  n == null ? '—' : `€${n.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+const fmtPct = (n) => (n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`);
+
+// ---- Component ------------------------------------------------------------
+
+const STORAGE_KEY = 'ledgerwatch_positions_v1';
+
+const loadStoredPositions = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Merge mit INITIAL_POSITIONS, falls neue Coins hinzugefügt wurden
+      return { ...INITIAL_POSITIONS, ...parsed };
+    }
+  } catch (e) {
+    // localStorage nicht verfügbar oder defektes JSON — Fallback auf Startwerte
+  }
+  return INITIAL_POSITIONS;
+};
+
+export default function StackFolio() {
+  const [coins, setCoins] = useState(null);
+  const [eurRate, setEurRate] = useState(0.865);
+  const [fng, setFng] = useState(null);
+  const [live, setLive] = useState(false);
+  const [tick, setTick] = useState(new Date());
+  const [positions, setPositions] = useState(loadStoredPositions);
+  const [openForm, setOpenForm] = useState(null); // coinId of open "add purchase" form
+
+  // Positionen bei jeder Änderung dauerhaft im Browser speichern
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
+    } catch (e) {
+      // Speicher voll oder nicht verfügbar — Positionen bleiben trotzdem im aktuellen Tab erhalten
+    }
+  }, [positions]);
+
+  const load = useCallback(async () => {
+    const results = await Promise.allSettled([
+      fetch(
+        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${WATCHLIST_IDS.join(
+          ','
+        )}&order=market_cap_desc&sparkline=true&price_change_percentage=24h`
+      ).then((r) => r.json()),
+      fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur').then((r) => r.json()),
+      fetch('https://api.alternative.me/fng/?limit=1').then((r) => r.json()),
+    ]);
+    const [m, p, f] = results;
+    let ok = false;
+    if (m.status === 'fulfilled' && Array.isArray(m.value)) {
+      setCoins(m.value);
+      ok = true;
+    }
+    if (p.status === 'fulfilled' && p.value?.bitcoin?.usd && p.value?.bitcoin?.eur) {
+      setEurRate(p.value.bitcoin.eur / p.value.bitcoin.usd);
+    }
+    if (f.status === 'fulfilled' && f.value?.data?.[0]) setFng(f.value.data[0]);
+    setLive(ok);
+    setTick(new Date());
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 45000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const priceUSD = (id) => coins?.find((c) => c.id === id)?.current_price ?? null;
+
+  const addPurchase = (id, qty, price) => {
+    setPositions((prev) => {
+      const pos = prev[id] || { amount: 0, avgEntry: 0 };
+      const newAmount = pos.amount + qty;
+      const newAvg = newAmount > 0 ? (pos.amount * pos.avgEntry + qty * price) / newAmount : 0;
+      return { ...prev, [id]: { amount: newAmount, avgEntry: newAvg } };
+    });
+    setOpenForm(null);
+  };
+
+  // Portfolio-Summe über alle Coins mit Bestand
+  let totalValueEUR = 0;
+  let totalCostEUR = 0;
+  WATCHLIST_IDS.forEach((id) => {
+    const pos = positions[id];
+    const p = priceUSD(id);
+    if (pos?.amount > 0 && p != null) {
+      totalValueEUR += pos.amount * p * eurRate;
+      totalCostEUR += pos.amount * pos.avgEntry * eurRate;
+    }
+  });
+  const totalPL = totalValueEUR - totalCostEUR;
+  const totalPLPct = totalCostEUR > 0 ? (totalPL / totalCostEUR) * 100 : 0;
+
+  const btcPrice = priceUSD('bitcoin');
+  const nextRung = btcPrice != null ? BUY_LADDER.find((r) => btcPrice <= r.price) : null;
+  const rungIdx = nextRung ? BUY_LADDER.indexOf(nextRung) : -1;
+
+  const fngValue = fng ? parseInt(fng.value, 10) : null;
+  const fngLabelMap = { 'Extreme Fear': 'Extreme Angst', Fear: 'Angst', Neutral: 'Neutral', Greed: 'Gier', 'Extreme Greed': 'Extreme Gier' };
+
+  return (
+    <div style={s.page}>
+      <div style={s.container}>
+        {/* Header */}
+        <header style={s.header}>
+          <div>
+            <div style={s.brand}>Portfolio</div>
+            <div style={s.brandSub}>Self-Custody Tracker</div>
+          </div>
+          <div style={s.liveTag}>
+            <span style={{ ...s.dot, background: live ? '#22C55E' : '#94A3B8' }} />
+            {live ? 'Live' : 'Verbinde…'} · {tick.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+          </div>
+        </header>
+
+        {/* Hero total */}
+        <section style={s.hero}>
+          <div style={s.eyebrow}>GESAMTWERT PORTFOLIO</div>
+          <div style={s.heroNum}>{fmtEUR(totalValueEUR)}</div>
+          <div style={s.heroRow}>
+            <span style={{ ...s.plTag, color: totalPL >= 0 ? '#4ADE80' : '#F87171', background: totalPL >= 0 ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)' }}>
+              {totalPL >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+              {totalPL >= 0 ? '+' : ''}{fmtEUR(totalPL)} ({fmtPct(totalPLPct)})
+            </span>
+            <span style={s.costNote}>Einsatz {fmtEUR(totalCostEUR)}</span>
+          </div>
+        </section>
+
+        {/* Fear & Greed + Kaufleiter */}
+        <section style={s.dualGrid}>
+          <div style={s.panel}>
+            <div style={s.panelTitle}>Fear &amp; Greed</div>
+            <div style={s.fngRow}>
+              <span style={{ ...s.fngNum, color: fngValue != null ? zoneColor(fngValue) : '#94A3B8' }}>
+                {fngValue ?? '—'}
+              </span>
+              <span style={s.fngLabel}>{fng ? fngLabelMap[fng.value_classification] || fng.value_classification : 'lädt…'}</span>
+            </div>
+            <div style={s.fngTrack}>
+              <div style={s.fngGradient} />
+              {fngValue != null && <div style={{ ...s.fngMarker, left: `${fngValue}%` }} />}
+            </div>
+          </div>
+
+          <div style={s.panel}>
+            <div style={s.panelTitle}>Kaufleiter · BTC</div>
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {BUY_LADDER.map((r, i) => {
+                const active = i === rungIdx;
+                return (
+                  <div key={r.price} style={s.rungRow}>
+                    <span style={{ ...s.rungDot, background: active ? '#4ADE80' : '#2A3140' }} />
+                    <span style={{ ...s.rungPrice, color: active ? '#0F172A' : '#94A3B8' }}>${r.price.toLocaleString('de-DE')}</span>
+                    <span style={{ ...s.rungAmt, color: active ? '#4ADE80' : '#3A4152' }}>{active ? `AKTIV · €${r.amount}` : `€${r.amount}`}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* Positions */}
+        <section>
+          <div style={s.sectionTitle}>POSITIONEN</div>
+          <div style={s.list}>
+            {WATCHLIST_IDS.map((id) => (
+              <CoinCard
+                key={id}
+                id={id}
+                meta={COIN_META[id]}
+                coin={coins?.find((c) => c.id === id)}
+                eurRate={eurRate}
+                position={positions[id]}
+                open={openForm === id}
+                onToggleForm={() => setOpenForm(openForm === id ? null : id)}
+                onAdd={(qty, price) => addPurchase(id, qty, price)}
+              />
+            ))}
+          </div>
+        </section>
+
+        <footer style={s.footer}>Self-Custody · Käufe werden dauerhaft in diesem Browser gespeichert</footer>
+      </div>
+    </div>
+  );
+}
+
+// Reset-Funktion für die Konsole (optional): localStorage.removeItem('ledgerwatch_positions_v1')
+
+// ---- Coin Card ------------------------------------------------------------
+
+function CoinCard({ id, meta, coin, eurRate, position, open, onToggleForm, onAdd }) {
+  const [amountUSD, setAmountUSD] = useState('');
+  const [price, setPrice] = useState('');
+
+  const priceUSD = coin?.current_price ?? null;
+  const priceEUR = priceUSD != null ? priceUSD * eurRate : null;
+  const change = coin?.price_change_percentage_24h;
+  const positive = change >= 0;
+  const spark = coin?.sparkline_in_7d?.price || [];
+  const sparkData = spark.map((p, i) => ({ i, p }));
+
+  const hasPosition = position?.amount > 0;
+  const posValueEUR = hasPosition && priceEUR != null ? position.amount * priceEUR : null;
+  const posCostEUR = hasPosition ? position.amount * position.avgEntry * eurRate : null;
+  const posPL = hasPosition && posValueEUR != null ? posValueEUR - posCostEUR : null;
+  const posPLPct = hasPosition && posCostEUR > 0 ? (posPL / posCostEUR) * 100 : null;
+
+  const submit = () => {
+    const invested = parseFloat(amountUSD);
+    const p = parseFloat(price);
+    if (invested > 0 && p > 0) {
+      const qty = invested / p; // Menge automatisch aus investiertem Betrag berechnet
+      onAdd(qty, p);
+      setAmountUSD('');
+      setPrice('');
+    }
+  };
+
+  return (
+    <div style={s.card}>
+      <div style={s.cardRow}>
+        {coin?.image ? (
+          <img
+            src={coin.image}
+            alt={meta.symbol}
+            style={s.coinIcon}
+            onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+          />
+        ) : null}
+        <div style={{ ...s.coinDot, background: meta.color, display: coin?.image ? 'none' : 'flex' }}>{meta.symbol.slice(0, 1)}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={s.coinName}>{meta.symbol}</div>
+          <div style={s.coinSub}>{meta.name}</div>
+        </div>
+        <div style={{ width: 70, height: 30, flexShrink: 0 }}>
+          {sparkData.length > 0 && (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={sparkData}>
+                <Line type="monotone" dataKey="p" stroke={positive ? '#4ADE80' : '#F87171'} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+        <div style={{ textAlign: 'right', minWidth: 92 }}>
+          <div style={s.priceUSD}>{priceUSD != null ? fmtUSD(priceUSD, priceUSD < 10 ? 4 : 0) : '—'}</div>
+          <div style={{ ...s.change, color: positive ? '#4ADE80' : '#F87171' }}>{fmtPct(change)}</div>
+        </div>
+        <button style={s.addBtn} onClick={onToggleForm} aria-label="Kauf hinzufügen">
+          {open ? <X size={14} /> : <Plus size={14} />}
+        </button>
+      </div>
+
+      {hasPosition && (
+        <div style={s.posRow}>
+          <div style={s.posItem}>
+            <span style={s.posLabel}>Bestand</span>
+            <span style={s.posValue}>{position.amount.toFixed(id === 'bitcoin' ? 8 : 4)} {meta.symbol}</span>
+          </div>
+          <div style={s.posItem}>
+            <span style={s.posLabel}>Ø Einstieg</span>
+            <span style={s.posValue}>{fmtUSD(position.avgEntry, position.avgEntry < 10 ? 4 : 0)}</span>
+          </div>
+          <div style={s.posItem}>
+            <span style={s.posLabel}>Wert</span>
+            <span style={s.posValue}>{fmtEUR(posValueEUR)}</span>
+          </div>
+          <div style={s.posItem}>
+            <span style={s.posLabel}>P&amp;L</span>
+            <span style={{ ...s.posValue, color: posPL >= 0 ? '#4ADE80' : '#F87171', fontWeight: 700 }}>
+              {posPL >= 0 ? '+' : ''}{fmtEUR(posPL)} ({fmtPct(posPLPct)})
+            </span>
+          </div>
+        </div>
+      )}
+
+      {open && (
+        <div style={s.form}>
+          <div style={s.formField}>
+            <label style={s.formLabel}>Investiert (USD)</label>
+            <input style={s.formInput} type="number" step="any" value={amountUSD} onChange={(e) => setAmountUSD(e.target.value)} placeholder="z.B. 400" />
+          </div>
+          <div style={s.formField}>
+            <label style={s.formLabel}>Preis pro {meta.symbol} (USD)</label>
+            <input style={s.formInput} type="number" step="any" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="z.B. 55000" />
+          </div>
+          <button style={s.formSubmit} onClick={submit}>Hinzufügen</button>
+          {parseFloat(amountUSD) > 0 && parseFloat(price) > 0 && (
+            <div style={s.formPreview}>
+              ≈ {(parseFloat(amountUSD) / parseFloat(price)).toFixed(id === 'bitcoin' ? 8 : 4)} {meta.symbol}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function zoneColor(v) {
+  if (v < 25) return '#F87171';
+  if (v < 45) return '#FB923C';
+  if (v < 55) return '#FACC15';
+  if (v < 75) return '#A3E635';
+  return '#4ADE80';
+}
+
+// ---- Styles ------------------------------------------------------------
+
+const s = {
+  page: { minHeight: '100vh', background: '#0B0E14', color: '#E5E9F0', fontFamily: "'Inter', -apple-system, sans-serif" },
+  container: { maxWidth: 640, margin: '0 auto', padding: '24px 18px 60px' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22 },
+  brand: { fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em', color: '#F1F5F9' },
+  brandSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  liveTag: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748B', fontFamily: "'JetBrains Mono', monospace" },
+  dot: { width: 6, height: 6, borderRadius: '50%' },
+
+  hero: { background: '#12161F', border: '1px solid #1E2430', borderRadius: 16, padding: '22px 20px', marginBottom: 14 },
+  eyebrow: { fontSize: 10.5, letterSpacing: '0.08em', color: '#64748B', fontWeight: 700 },
+  heroNum: { fontSize: 38, fontWeight: 700, letterSpacing: '-0.02em', marginTop: 6, fontFamily: "'JetBrains Mono', monospace", color: '#F8FAFC' },
+  heroRow: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' },
+  plTag: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12.5, fontWeight: 700, padding: '5px 10px', borderRadius: 8, fontFamily: "'JetBrains Mono', monospace" },
+  costNote: { fontSize: 11.5, color: '#64748B' },
+
+  dualGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 },
+  panel: { background: '#12161F', border: '1px solid #1E2430', borderRadius: 14, padding: '15px 16px' },
+  panelTitle: { fontSize: 11, fontWeight: 700, color: '#64748B', letterSpacing: '0.04em' },
+  fngRow: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 },
+  fngNum: { fontSize: 28, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" },
+  fngLabel: { fontSize: 12, color: '#94A3B8', fontWeight: 600 },
+  fngTrack: { position: 'relative', height: 5, borderRadius: 3, marginTop: 14 },
+  fngGradient: { position: 'absolute', inset: 0, borderRadius: 3, background: 'linear-gradient(90deg,#F87171,#FB923C,#FACC15,#A3E635,#4ADE80)', opacity: 0.9 },
+  fngMarker: { position: 'absolute', top: -2.5, width: 10, height: 10, borderRadius: '50%', background: '#0B0E14', border: '2px solid #E5E9F0', transform: 'translateX(-50%)' },
+
+  rungRow: { display: 'flex', alignItems: 'center', gap: 8 },
+  rungDot: { width: 5, height: 5, borderRadius: '50%', flexShrink: 0 },
+  rungPrice: { fontSize: 12, fontWeight: 600, flex: 1, fontFamily: "'JetBrains Mono', monospace" },
+  rungAmt: { fontSize: 10.5, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" },
+
+  sectionTitle: { fontSize: 11, fontWeight: 700, color: '#64748B', letterSpacing: '0.06em', marginBottom: 10 },
+  list: { display: 'flex', flexDirection: 'column', gap: 8 },
+
+  card: { background: '#12161F', border: '1px solid #1E2430', borderRadius: 14, padding: 14 },
+  cardRow: { display: 'flex', alignItems: 'center', gap: 12 },
+  coinDot: { width: 30, height: 30, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 12, flexShrink: 0 },
+  coinIcon: { width: 30, height: 30, borderRadius: '50%', flexShrink: 0, objectFit: 'cover', background: '#1A1F2B' },
+  coinName: { fontSize: 13.5, fontWeight: 700, color: '#F1F5F9' },
+  coinSub: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  priceUSD: { fontSize: 13, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#F1F5F9' },
+  change: { fontSize: 11, fontWeight: 600, marginTop: 1, fontFamily: "'JetBrains Mono', monospace" },
+  addBtn: { width: 28, height: 28, borderRadius: 8, border: '1px solid #2A3140', background: '#1A1F2B', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8', cursor: 'pointer', flexShrink: 0 },
+
+  posRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 12, paddingTop: 12, borderTop: '1px solid #1E2430' },
+  posItem: { display: 'flex', flexDirection: 'column', gap: 2 },
+  posLabel: { fontSize: 9.5, color: '#64748B', fontWeight: 600, letterSpacing: '0.03em' },
+  posValue: { fontSize: 11.5, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", color: '#E5E9F0' },
+
+  form: { display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: '1px solid #1E2430', flexWrap: 'wrap' },
+  formField: { display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 110px' },
+  formLabel: { fontSize: 10, color: '#64748B', fontWeight: 600 },
+  formInput: { border: '1px solid #2A3140', borderRadius: 8, padding: '7px 10px', fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: 'none', background: '#0B0E14', color: '#E5E9F0' },
+  formSubmit: { background: '#E5E9F0', color: '#0B0E14', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' },
+  formPreview: { fontSize: 11, color: '#64748B', fontFamily: "'JetBrains Mono', monospace", width: '100%', marginTop: -2 },
+
+  footer: { textAlign: 'center', fontSize: 10.5, color: '#374151', marginTop: 24 },
+};
