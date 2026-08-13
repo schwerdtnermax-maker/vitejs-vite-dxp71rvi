@@ -15,14 +15,18 @@ const BUY_LADDER = [
 const WATCHLIST_IDS = ['bitcoin', 'solana', 'ethereum', 'binancecoin', 'sui', 'avalanche-2', 'ripple'];
 
 const COIN_META = {
-  bitcoin: { symbol: 'BTC', name: 'Bitcoin', color: '#F7931A' },
-  solana: { symbol: 'SOL', name: 'Solana', color: '#9945FF' },
-  ethereum: { symbol: 'ETH', name: 'Ethereum', color: '#627EEA' },
-  binancecoin: { symbol: 'BNB', name: 'BNB', color: '#F3BA2F' },
-  sui: { symbol: 'SUI', name: 'Sui', color: '#4DA2FF' },
-  'avalanche-2': { symbol: 'AVAX', name: 'Avalanche', color: '#E84142' },
-  ripple: { symbol: 'XRP', name: 'XRP', color: '#25A768' },
+  bitcoin: { symbol: 'BTC', name: 'Bitcoin', color: '#F7931A', binance: 'BTCUSDT' },
+  solana: { symbol: 'SOL', name: 'Solana', color: '#9945FF', binance: 'SOLUSDT' },
+  ethereum: { symbol: 'ETH', name: 'Ethereum', color: '#627EEA', binance: 'ETHUSDT' },
+  binancecoin: { symbol: 'BNB', name: 'BNB', color: '#F3BA2F', binance: 'BNBUSDT' },
+  sui: { symbol: 'SUI', name: 'Sui', color: '#4DA2FF', binance: 'SUIUSDT' },
+  'avalanche-2': { symbol: 'AVAX', name: 'Avalanche', color: '#E84142', binance: 'AVAXUSDT' },
+  ripple: { symbol: 'XRP', name: 'XRP', color: '#25A768', binance: 'XRPUSDT' },
 };
+
+// Icons von einer öffentlichen CDN — fällt automatisch auf den Buchstaben-Kreis
+// zurück, falls ein Symbol dort nicht existiert (siehe onError in CoinCard).
+const iconUrl = (id) => `https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/128/color/${COIN_META[id].symbol.toLowerCase()}.png`;
 
 // Startbestand — Menge & Einstiegspreis in USD pro Coin.
 // Kann direkt in der App über "+" bei jedem Coin ergänzt werden.
@@ -84,23 +88,46 @@ export default function StackFolio() {
 
   const load = useCallback(async () => {
     setRefreshing(true);
+    const symbols = WATCHLIST_IDS.map((id) => COIN_META[id].binance);
+    const symbolsParam = encodeURIComponent(JSON.stringify([...symbols, 'BTCEUR']));
+
     const results = await Promise.allSettled([
-      fetch(
-        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${WATCHLIST_IDS.join(
-          ','
-        )}&order=market_cap_desc&sparkline=true&price_change_percentage=24h`
-      ).then((r) => r.json()),
-      fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur').then((r) => r.json()),
+      fetch(`https://api.binance.com/api/v3/ticker/24hr?symbols=${symbolsParam}`).then((r) => r.json()),
       fetch('https://api.alternative.me/fng/?limit=1').then((r) => r.json()),
     ]);
-    const [m, p, f] = results;
+    const [t, f] = results;
     let ok = false;
-    if (m.status === 'fulfilled' && Array.isArray(m.value)) {
-      setCoins(m.value);
-      ok = true;
-    }
-    if (p.status === 'fulfilled' && p.value?.bitcoin?.usd && p.value?.bitcoin?.eur) {
-      setEurRate(p.value.bitcoin.eur / p.value.bitcoin.usd);
+
+    if (t.status === 'fulfilled' && Array.isArray(t.value)) {
+      const bySymbol = {};
+      t.value.forEach((row) => {
+        bySymbol[row.symbol] = row;
+      });
+      const btcEur = bySymbol['BTCEUR'];
+      const btcUsd = bySymbol['BTCUSDT'];
+      if (btcEur && btcUsd) {
+        setEurRate(parseFloat(btcEur.lastPrice) / parseFloat(btcUsd.lastPrice));
+      }
+      const newCoins = WATCHLIST_IDS.map((id) => {
+        const row = bySymbol[COIN_META[id].binance];
+        if (!row) return null;
+        return {
+          id,
+          symbol: COIN_META[id].symbol,
+          current_price: parseFloat(row.lastPrice),
+          price_change_percentage_24h: parseFloat(row.priceChangePercent),
+          image: iconUrl(id),
+        };
+      }).filter(Boolean);
+      if (newCoins.length > 0) {
+        setCoins((prev) =>
+          newCoins.map((c) => ({
+            ...c,
+            sparkline_in_7d: { price: prev?.find((p) => p.id === c.id)?.sparkline_in_7d?.price || [] },
+          }))
+        );
+        ok = true;
+      }
     }
     if (f.status === 'fulfilled' && f.value?.data?.[0]) setFng(f.value.data[0]);
     setLive(ok);
@@ -109,11 +136,37 @@ export default function StackFolio() {
     setRefreshing(false);
   }, []);
 
+  // Sparklines (7 Tage, 4h-Kerzen) seltener laden — Binance erlaubt das großzügig,
+  // aber es gibt keinen Grund, das bei jedem 10s-Preis-Tick mitzuladen.
+  const loadSparklines = useCallback(async () => {
+    const results = await Promise.allSettled(
+      WATCHLIST_IDS.map((id) =>
+        fetch(`https://api.binance.com/api/v3/klines?symbol=${COIN_META[id].binance}&interval=4h&limit=42`).then((r) => r.json())
+      )
+    );
+    setCoins((prev) => {
+      if (!prev) return prev;
+      return prev.map((c, i) => {
+        const res = results[i];
+        if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+          const closes = res.value.map((k) => parseFloat(k[4]));
+          return { ...c, sparkline_in_7d: { price: closes } };
+        }
+        return c;
+      });
+    });
+  }, []);
+
   useEffect(() => {
     load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
-  }, [load]);
+    loadSparklines();
+    const priceId = setInterval(load, 10000);
+    const sparkId = setInterval(loadSparklines, 120000);
+    return () => {
+      clearInterval(priceId);
+      clearInterval(sparkId);
+    };
+  }, [load, loadSparklines]);
 
   const priceUSD = (id) => coins?.find((c) => c.id === id)?.current_price ?? null;
 
