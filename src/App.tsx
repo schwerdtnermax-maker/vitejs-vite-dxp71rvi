@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { LineChart, Line, ResponsiveContainer } from 'recharts';
-import { Plus, X, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from 'recharts';
+import { Plus, X, TrendingUp, TrendingDown, RefreshCw, Clock } from 'lucide-react';
 
 // ---- Konfiguration ----------------------------------------------------
 
@@ -11,6 +11,11 @@ const BUY_LADDER = [
   { price: 47500, amount: 400 },
   { price: 45000, amount: 400 },
 ];
+
+const TRANSFER_DATE = new Date('2026-12-28T16:00:00');
+const HISTORY_KEY = 'ledgerwatch_history_v1';
+const HISTORY_MAX_POINTS = 300;
+const HISTORY_MIN_GAP_MS = 60000; // frühestens jede Minute einen neuen Punkt loggen
 
 const WATCHLIST_IDS = ['bitcoin', 'solana', 'ethereum', 'binancecoin', 'sui', 'avalanche-2', 'ripple'];
 
@@ -66,6 +71,16 @@ const loadStoredPositions = () => {
   return INITIAL_POSITIONS;
 };
 
+const loadStoredHistory = () => {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    // ignorieren, mit leerer Historie starten
+  }
+  return [];
+};
+
 export default function StackFolio() {
   const [coins, setCoins] = useState(null);
   const [eurRate, setEurRate] = useState(0.865);
@@ -76,6 +91,8 @@ export default function StackFolio() {
   const [refreshing, setRefreshing] = useState(false);
   const [positions, setPositions] = useState(loadStoredPositions);
   const [openForm, setOpenForm] = useState(null); // coinId of open "add purchase" form
+  const [history, setHistory] = useState(loadStoredHistory);
+  const lastLoggedAt = useRef(0);
 
   // Positionen bei jeder Änderung dauerhaft im Browser speichern
   useEffect(() => {
@@ -198,6 +215,38 @@ export default function StackFolio() {
   const totalPL = totalValueEUR - totalCostEUR;
   const totalPLPct = totalCostEUR > 0 ? (totalPL / totalCostEUR) * 100 : 0;
 
+  // Allokation je Coin für das Pie-Chart
+  const allocation = WATCHLIST_IDS.map((id) => {
+    const pos = positions[id];
+    const p = priceUSD(id);
+    const value = pos?.amount > 0 && p != null ? pos.amount * p * eurRate : 0;
+    return { id, name: COIN_META[id].symbol, color: COIN_META[id].color, value };
+  }).filter((a) => a.value > 0);
+
+  // Portfolio-Verlauf: alle ~60s (oder sofort bei einem neuen Kauf) einen Punkt loggen
+  useEffect(() => {
+    if (totalValueEUR <= 0) return;
+    const nowMs = Date.now();
+    if (nowMs - lastLoggedAt.current < HISTORY_MIN_GAP_MS) return;
+    lastLoggedAt.current = nowMs;
+    setHistory((prev) => {
+      const next = [...prev, { t: nowMs, v: totalValueEUR }].slice(-HISTORY_MAX_POINTS);
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+      } catch (e) {
+        // Speicher voll — Verlauf bleibt trotzdem im aktuellen Tab erhalten
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalValueEUR]);
+
+  // Countdown bis zum geplanten TR→Ledger Transfer
+  const msLeft = TRANSFER_DATE.getTime() - now.getTime();
+  const daysLeft = Math.max(0, Math.floor(msLeft / (1000 * 60 * 60 * 24)));
+  const hoursLeft = Math.max(0, Math.floor((msLeft / (1000 * 60 * 60)) % 24));
+  const minsLeft = Math.max(0, Math.floor((msLeft / (1000 * 60)) % 60));
+
   const btcPrice = priceUSD('bitcoin');
   const nextRung = btcPrice != null ? BUY_LADDER.find((r) => btcPrice <= r.price) : null;
   const rungIdx = nextRung ? BUY_LADDER.indexOf(nextRung) : -1;
@@ -284,6 +333,87 @@ export default function StackFolio() {
                 );
               })}
             </div>
+          </div>
+        </section>
+
+        {/* Transfer-Countdown */}
+        <section style={{ marginBottom: 20 }}>
+          <div style={s.panel}>
+            <div style={s.panelTitle}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <Clock size={11} /> TR → LEDGER TRANSFER
+              </span>
+            </div>
+            {msLeft > 0 ? (
+              <div style={s.countdownRow}>
+                <CountdownBlock value={daysLeft} label="Tage" />
+                <CountdownBlock value={hoursLeft} label="Std" />
+                <CountdownBlock value={minsLeft} label="Min" />
+                <span style={s.countdownDate}>28.12.2026 · 16:00</span>
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 13, color: '#4ADE80', fontWeight: 700 }}>Termin erreicht</div>
+            )}
+          </div>
+        </section>
+
+        {/* Verlauf + Allokation */}
+        <section style={s.dualGrid}>
+          <div style={s.panel}>
+            <div style={s.panelTitle}>PORTFOLIO-VERLAUF</div>
+            {history.length >= 2 ? (
+              <div style={{ height: 130, marginTop: 10 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={history}>
+                    <XAxis dataKey="t" hide />
+                    <YAxis hide domain={['dataMin - dataMin*0.02', 'dataMax + dataMax*0.02']} />
+                    <Tooltip
+                      contentStyle={{ background: '#0B0E14', border: '1px solid #2A3140', borderRadius: 8, fontSize: 11 }}
+                      labelFormatter={(t) => new Date(t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      formatter={(v) => [fmtEUR(v), 'Wert']}
+                    />
+                    <Line type="monotone" dataKey="v" stroke="#4ADE80" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, fontSize: 11.5, color: '#64748B' }}>
+                Verlauf wird aufgezeichnet — Punkte sammeln sich mit der Zeit
+              </div>
+            )}
+          </div>
+
+          <div style={s.panel}>
+            <div style={s.panelTitle}>ALLOKATION</div>
+            {allocation.length > 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+                <div style={{ width: 90, height: 90, flexShrink: 0 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={allocation} dataKey="value" nameKey="name" innerRadius={26} outerRadius={42} paddingAngle={2} stroke="none">
+                        {allocation.map((a) => (
+                          <Cell key={a.id} fill={a.color} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                  {allocation
+                    .slice()
+                    .sort((a, b) => b.value - a.value)
+                    .map((a) => (
+                      <div key={a.id} style={s.allocRow}>
+                        <span style={{ ...s.allocDot, background: a.color }} />
+                        <span style={s.allocSymbol}>{a.name}</span>
+                        <span style={s.allocPct}>{((a.value / totalValueEUR) * 100).toFixed(1)}%</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, fontSize: 11.5, color: '#64748B' }}>Noch keine Positionen</div>
+            )}
           </div>
         </section>
 
@@ -424,6 +554,15 @@ function CoinCard({ id, meta, coin, eurRate, position, open, onToggleForm, onAdd
   );
 }
 
+function CountdownBlock({ value, label }) {
+  return (
+    <div style={s.countdownBlock}>
+      <span style={s.countdownValue}>{value}</span>
+      <span style={s.countdownLabel}>{label}</span>
+    </div>
+  );
+}
+
 function zoneColor(v) {
   if (v < 25) return '#F87171';
   if (v < 45) return '#FB923C';
@@ -492,4 +631,15 @@ const s = {
   formPreview: { fontSize: 11, color: '#64748B', fontFamily: "'JetBrains Mono', monospace", width: '100%', marginTop: -2 },
 
   footer: { textAlign: 'center', fontSize: 10.5, color: '#374151', marginTop: 24 },
+
+  countdownRow: { display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, flexWrap: 'wrap' },
+  countdownBlock: { display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 44 },
+  countdownValue: { fontSize: 22, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#F1F5F9' },
+  countdownLabel: { fontSize: 9.5, color: '#64748B', fontWeight: 600, letterSpacing: '0.03em', marginTop: 1 },
+  countdownDate: { fontSize: 11, color: '#64748B', marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace" },
+
+  allocRow: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5 },
+  allocDot: { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
+  allocSymbol: { fontWeight: 700, color: '#E5E9F0', flex: 1 },
+  allocPct: { fontFamily: "'JetBrains Mono', monospace", color: '#94A3B8', fontWeight: 600 },
 };
