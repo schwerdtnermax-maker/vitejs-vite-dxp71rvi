@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, PieChart, Pie, Cell } from 'recharts';
+import React, { useState, useEffect, useCallback } from 'react';
+import { LineChart, Line, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Plus, X, TrendingUp, TrendingDown, RefreshCw, Clock } from 'lucide-react';
 
 // ---- Konfiguration ----------------------------------------------------
@@ -13,9 +13,6 @@ const BUY_LADDER = [
 ];
 
 const TRANSFER_DATE = new Date('2026-12-28T16:00:00');
-const HISTORY_KEY = 'ledgerwatch_history_v1';
-const HISTORY_MAX_POINTS = 300;
-const HISTORY_MIN_GAP_MS = 60000; // frühestens jede Minute einen neuen Punkt loggen
 
 const WATCHLIST_IDS = ['bitcoin', 'solana', 'ethereum', 'binancecoin', 'sui', 'avalanche-2', 'ripple'];
 
@@ -71,16 +68,6 @@ const loadStoredPositions = () => {
   return INITIAL_POSITIONS;
 };
 
-const loadStoredHistory = () => {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    // ignorieren, mit leerer Historie starten
-  }
-  return [];
-};
-
 export default function StackFolio() {
   const [coins, setCoins] = useState(null);
   const [eurRate, setEurRate] = useState(0.865);
@@ -91,8 +78,6 @@ export default function StackFolio() {
   const [refreshing, setRefreshing] = useState(false);
   const [positions, setPositions] = useState(loadStoredPositions);
   const [openForm, setOpenForm] = useState(null); // coinId of open "add purchase" form
-  const [history, setHistory] = useState(loadStoredHistory);
-  const lastLoggedAt = useRef(0);
 
   // Positionen bei jeder Änderung dauerhaft im Browser speichern
   useEffect(() => {
@@ -223,24 +208,6 @@ export default function StackFolio() {
     return { id, name: COIN_META[id].symbol, color: COIN_META[id].color, value };
   }).filter((a) => a.value > 0);
 
-  // Portfolio-Verlauf: alle ~60s (oder sofort bei einem neuen Kauf) einen Punkt loggen
-  useEffect(() => {
-    if (totalValueEUR <= 0) return;
-    const nowMs = Date.now();
-    if (nowMs - lastLoggedAt.current < HISTORY_MIN_GAP_MS) return;
-    lastLoggedAt.current = nowMs;
-    setHistory((prev) => {
-      const next = [...prev, { t: nowMs, v: totalValueEUR }].slice(-HISTORY_MAX_POINTS);
-      try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      } catch (e) {
-        // Speicher voll — Verlauf bleibt trotzdem im aktuellen Tab erhalten
-      }
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalValueEUR]);
-
   // Countdown bis zum geplanten TR→Ledger Transfer
   const msLeft = TRANSFER_DATE.getTime() - now.getTime();
   const daysLeft = Math.max(0, Math.floor(msLeft / (1000 * 60 * 60 * 24)));
@@ -357,32 +324,8 @@ export default function StackFolio() {
           </div>
         </section>
 
-        {/* Verlauf + Allokation */}
-        <section style={s.dualGrid}>
-          <div style={s.panel}>
-            <div style={s.panelTitle}>PORTFOLIO-VERLAUF</div>
-            {history.length >= 2 ? (
-              <div style={{ height: 130, marginTop: 10 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={history}>
-                    <XAxis dataKey="t" hide />
-                    <YAxis hide domain={['dataMin - dataMin*0.02', 'dataMax + dataMax*0.02']} />
-                    <Tooltip
-                      contentStyle={{ background: '#0B0E14', border: '1px solid #2A3140', borderRadius: 8, fontSize: 11 }}
-                      labelFormatter={(t) => new Date(t).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                      formatter={(v) => [fmtEUR(v), 'Wert']}
-                    />
-                    <Line type="monotone" dataKey="v" stroke="#4ADE80" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            ) : (
-              <div style={{ marginTop: 10, fontSize: 11.5, color: '#64748B' }}>
-                Verlauf wird aufgezeichnet — Punkte sammeln sich mit der Zeit
-              </div>
-            )}
-          </div>
-
+        {/* Allokation */}
+        <section style={{ marginBottom: 20 }}>
           <div style={s.panel}>
             <div style={s.panelTitle}>ALLOKATION</div>
             {allocation.length > 0 ? (
